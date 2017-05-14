@@ -1,7 +1,5 @@
 #pragma once
 
-#include "mock_timeout.h"
-
 #include <protocol/local_node.h>
 
 #include <fakeit.hpp>
