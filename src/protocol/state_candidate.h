@@ -18,5 +18,4 @@ public:
 
 private:
 	void _new_election(LocalNode&);
-	void _send_vote_requests(LocalNode&);
 };

@@ -5,10 +5,14 @@
 TEST_CASE("LEADER", "LOCAL")
 {
 	std::vector<milliseconds> timeouts;
+	std::vector<milliseconds> timeouts_hb_2;
+	std::vector<milliseconds> timeouts_hb_3;
 
+	RemoteNode::RequestHandler*       remote_2;
 	std::vector<AppendEntryArguments> remote_2_append_entries;
 	std::vector<VoteRequestArguments> remote_2_vote_requests;
 
+	RemoteNode::RequestHandler*       remote_3;
 	std::vector<AppendEntryArguments> remote_3_append_entries;
 	std::vector<VoteRequestArguments> remote_3_vote_requests;
 
@@ -26,6 +30,27 @@ TEST_CASE("LEADER", "LOCAL")
 			timeouts.push_back(duration);
 		});
 
+	Mock<Timeout> mock_timeout_hb_2;
+	Fake(Dtor(mock_timeout_hb_2));
+	Fake(Method(mock_timeout_hb_2, handler));
+	Fake(Method(mock_timeout_hb_2, reset));
+
+	When(Method(mock_timeout_hb_2, reset)).AlwaysDo(
+		[&timeouts_hb_2](auto const& duration)
+		{
+			timeouts_hb_2.push_back(duration);
+		});
+
+	Mock<Timeout> mock_timeout_hb_3;
+	Fake(Dtor(mock_timeout_hb_3));
+	Fake(Method(mock_timeout_hb_3, handler));
+	Fake(Method(mock_timeout_hb_3, reset));
+
+	When(Method(mock_timeout_hb_3, reset)).AlwaysDo(
+		[&timeouts_hb_3](auto const& duration)
+		{
+			timeouts_hb_3.push_back(duration);
+		});
 
 	Mock<RemoteNode> mock_remote_2;
 	Fake(Dtor(mock_remote_2));
@@ -35,6 +60,11 @@ TEST_CASE("LEADER", "LOCAL")
 	Fake(Method(mock_remote_2, request_vote));
 
 	When(Method(mock_remote_2, id)).AlwaysReturn(2);
+	When(Method(mock_remote_2, handler)).AlwaysDo(
+		[&remote_2](auto handler)
+		{
+			remote_2 = handler;
+		});
 	When(Method(mock_remote_2, append_entries)).AlwaysDo(
 		[&remote_2_append_entries](auto ae)
 		{
@@ -55,6 +85,11 @@ TEST_CASE("LEADER", "LOCAL")
 	Fake(Method(mock_remote_3, request_vote));
 
 	When(Method(mock_remote_3, id)).AlwaysReturn(3);
+	When(Method(mock_remote_3, handler)).AlwaysDo(
+		[&remote_3](auto handler)
+		{
+			remote_3 = handler;
+		});
 	When(Method(mock_remote_3, append_entries)).AlwaysDo(
 		[&remote_3_append_entries](auto ae)
 		{
@@ -72,11 +107,15 @@ TEST_CASE("LEADER", "LOCAL")
 	               el_timeout_min,
 	               el_timeout_max);
 
-	node.add(std::shared_ptr<RemoteNode>(&mock_remote_2.get()));
-	node.add(std::shared_ptr<RemoteNode>(&mock_remote_3.get()));
+	node.add(
+			std::shared_ptr<RemoteNode>(&mock_remote_2.get()),
+			std::shared_ptr<Timeout>(&mock_timeout_hb_2.get()));
+	node.add(
+			std::shared_ptr<RemoteNode>(&mock_remote_3.get()),
+			std::shared_ptr<Timeout>(&mock_timeout_hb_3.get()));
 
-	node.append_entries({2, 2, 0, 0, {{2, 1}}, 1});
-	node.append_entries({2, 2, 1, 2, {{2, 3}}, 1});
+	remote_2->append_entries({2, 2, 0, 0, {{2, 1}}, 1});
+	remote_2->append_entries({2, 2, 1, 2, {{2, 3}}, 1});
 	node.timeout();
 
 	timeouts.clear();
@@ -87,8 +126,8 @@ TEST_CASE("LEADER", "LOCAL")
 	remote_3_vote_requests.clear();
 
 
-	node.request_vote_reply(mock_remote_2.get(), 1, true);
-	node.request_vote_reply(mock_remote_3.get(), 1, true);
+	remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
+	remote_3->request_vote_reply(mock_remote_3.get(), 1, true);
 
 	SECTION("a new leader has arrived")
 	{

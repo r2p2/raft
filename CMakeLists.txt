@@ -18,6 +18,7 @@ set (SRC_FILES
 	src/protocol/state_candidate.cc
 	src/protocol/state_follower.cc
 	src/protocol/state_leader.cc
+	src/protocol/remote_node_proxy.cc
 	src/protocol/vote_request_arguments.cc
 )
 

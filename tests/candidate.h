@@ -5,10 +5,14 @@
 TEST_CASE("CANDIDATE", "LOCAL")
 {
 	std::vector<milliseconds> timeouts;
+	std::vector<milliseconds> timeouts_hb_2;
+	std::vector<milliseconds> timeouts_hb_3;
 
+	RemoteNode::RequestHandler*       remote_2;
 	std::vector<AppendEntryArguments> remote_2_append_entries;
 	std::vector<VoteRequestArguments> remote_2_vote_requests;
 
+	RemoteNode::RequestHandler*       remote_3;
 	std::vector<AppendEntryArguments> remote_3_append_entries;
 	std::vector<VoteRequestArguments> remote_3_vote_requests;
 
@@ -26,6 +30,27 @@ TEST_CASE("CANDIDATE", "LOCAL")
 			timeouts.push_back(duration);
 		});
 
+	Mock<Timeout> mock_timeout_hb_2;
+	Fake(Dtor(mock_timeout_hb_2));
+	Fake(Method(mock_timeout_hb_2, handler));
+	Fake(Method(mock_timeout_hb_2, reset));
+
+	When(Method(mock_timeout_hb_2, reset)).AlwaysDo(
+		[&timeouts_hb_2](auto const& duration)
+		{
+			timeouts_hb_2.push_back(duration);
+		});
+
+	Mock<Timeout> mock_timeout_hb_3;
+	Fake(Dtor(mock_timeout_hb_3));
+	Fake(Method(mock_timeout_hb_3, handler));
+	Fake(Method(mock_timeout_hb_3, reset));
+
+	When(Method(mock_timeout_hb_3, reset)).AlwaysDo(
+		[&timeouts_hb_3](auto const& duration)
+		{
+			timeouts_hb_3.push_back(duration);
+		});
 
 	Mock<RemoteNode> mock_remote_2;
 	Fake(Dtor(mock_remote_2));
@@ -35,6 +60,11 @@ TEST_CASE("CANDIDATE", "LOCAL")
 	Fake(Method(mock_remote_2, request_vote));
 
 	When(Method(mock_remote_2, id)).AlwaysReturn(2);
+	When(Method(mock_remote_2, handler)).AlwaysDo(
+		[&remote_2](auto handler)
+		{
+			remote_2 = handler;
+		});
 	When(Method(mock_remote_2, append_entries)).AlwaysDo(
 		[&remote_2_append_entries](auto ae)
 		{
@@ -55,6 +85,11 @@ TEST_CASE("CANDIDATE", "LOCAL")
 	Fake(Method(mock_remote_3, request_vote));
 
 	When(Method(mock_remote_3, id)).AlwaysReturn(3);
+	When(Method(mock_remote_3, handler)).AlwaysDo(
+		[&remote_3](auto handler)
+		{
+			remote_3 = handler;
+		});
 	When(Method(mock_remote_3, append_entries)).AlwaysDo(
 		[&remote_3_append_entries](auto ae)
 		{
@@ -72,8 +107,12 @@ TEST_CASE("CANDIDATE", "LOCAL")
 	               el_timeout_min,
 	               el_timeout_max);
 
-	node.add(std::shared_ptr<RemoteNode>(&mock_remote_2.get()));
-	node.add(std::shared_ptr<RemoteNode>(&mock_remote_3.get()));
+	node.add(
+			std::shared_ptr<RemoteNode>(&mock_remote_2.get()),
+			std::shared_ptr<Timeout>(&mock_timeout_hb_2.get()));
+	node.add(
+			std::shared_ptr<RemoteNode>(&mock_remote_3.get()),
+			std::shared_ptr<Timeout>(&mock_timeout_hb_3.get()));
 
 	timeouts.clear();
 	node.timeout();
@@ -136,46 +175,46 @@ TEST_CASE("CANDIDATE", "LOCAL")
 
 	SECTION("becomes leader after majority of votes")
 	{
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 
-		node.request_vote_reply(mock_remote_3.get(), 1, true);
+		remote_3->request_vote_reply(mock_remote_3.get(), 1, true);
 		REQUIRE(node.is_leader() == true);
 	}
 
 	SECTION("ignores redundant votes from same node")
 	{
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 	}
 
 	SECTION("ignores dismissed vote replies")
 	{
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 
-		node.request_vote_reply(mock_remote_3.get(), 1, false);
+		remote_3->request_vote_reply(mock_remote_3.get(), 1, false);
 		REQUIRE(node.is_leader() == false);
 	}
 
 	SECTION("becomes follower when new term is detected in vote reply")
 	{
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 
-		node.request_vote_reply(mock_remote_3.get(), 2, false);
+		remote_3->request_vote_reply(mock_remote_3.get(), 2, false);
 		REQUIRE(node.is_follower() == true);
 	}
 
 	SECTION("becomes follower when new term is detected in apend entries reply")
 	{
-		node.request_vote_reply(mock_remote_2.get(), 1, true);
+		remote_2->request_vote_reply(mock_remote_2.get(), 1, true);
 		REQUIRE(node.is_leader() == false);
 
-		node.append_entries_reply(mock_remote_3.get(), 2, false);
+		remote_3->append_entries_reply(mock_remote_3.get(), 2, false);
 		REQUIRE(node.is_follower() == true);
 	}
 }

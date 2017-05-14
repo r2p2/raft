@@ -32,7 +32,5 @@ void StateCandidate::_new_election(LocalNode& node)
 
 	for (auto rem_node : node._remote_nodes)
 		rem_node.start_election_cycle();
-
-	_send_vote_requests(node);
 }
 

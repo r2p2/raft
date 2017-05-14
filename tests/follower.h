@@ -13,6 +13,11 @@ TEST_CASE("FOLLOWER", "LOCAL")
 	auto const el_timeout_max{300ms};
 
 	std::vector<milliseconds> timeouts;
+	std::vector<milliseconds> timeouts_hb_2;
+
+	RemoteNode::RequestHandler*       remote_2;
+	std::vector<AppendEntryArguments> remote_2_append_entries;
+	std::vector<VoteRequestArguments> remote_2_vote_requests;
 
 	Mock<Timeout> mock_timeout;
 	Fake(Dtor(mock_timeout));
@@ -25,10 +30,49 @@ TEST_CASE("FOLLOWER", "LOCAL")
 			timeouts.push_back(duration);
 		});
 
+	Mock<Timeout> mock_timeout_hb_2;
+	Fake(Dtor(mock_timeout_hb_2));
+	Fake(Method(mock_timeout_hb_2, handler));
+	Fake(Method(mock_timeout_hb_2, reset));
+
+	When(Method(mock_timeout_hb_2, reset)).AlwaysDo(
+		[&timeouts_hb_2](auto const& duration)
+		{
+			timeouts_hb_2.push_back(duration);
+		});
+
+	Mock<RemoteNode> mock_remote_2;
+	Fake(Dtor(mock_remote_2));
+	Fake(Method(mock_remote_2, handler));
+	Fake(Method(mock_remote_2, id));
+	Fake(Method(mock_remote_2, append_entries));
+	Fake(Method(mock_remote_2, request_vote));
+
+	When(Method(mock_remote_2, id)).AlwaysReturn(2);
+	When(Method(mock_remote_2, handler)).AlwaysDo(
+		[&remote_2](auto handler)
+		{
+			remote_2 = handler;
+		});
+	When(Method(mock_remote_2, append_entries)).AlwaysDo(
+		[&remote_2_append_entries](auto ae)
+		{
+			remote_2_append_entries.push_back(ae);
+		});
+	When(Method(mock_remote_2, request_vote)).AlwaysDo(
+		[&remote_2_vote_requests](auto vr)
+		{
+			remote_2_vote_requests.push_back(vr);
+		});
+
 	LocalNode node(1,
 	               std::shared_ptr<Timeout>(&mock_timeout.get()),
 	               el_timeout_min,
 	               el_timeout_max);
+
+	node.add(
+			std::shared_ptr<RemoteNode>(&mock_remote_2.get()),
+			std::shared_ptr<Timeout>(&mock_timeout_hb_2.get()));
 
 	SECTION("new node starts as follower")
 	{
@@ -76,7 +120,7 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("grants first valid vote request in a term")
 	{
-		auto reply = node.request_vote({1, 2, 0, 0});
+		auto reply = remote_2->request_vote({1, 2, 0, 0});
 		REQUIRE(reply.first == 1);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.current_term() == 1);
@@ -86,9 +130,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("rejects second valid vote request in a term")
 	{
-		node.request_vote({1, 2, 0, 0});
+		remote_2->request_vote({1, 2, 0, 0});
 
-		auto reply = node.request_vote({1, 3, 0, 0});
+		auto reply = remote_2->request_vote({1, 3, 0, 0});
 		REQUIRE(reply.first == 1);
 		REQUIRE(reply.second == false);
 		REQUIRE(node.current_term() == 1);
@@ -97,9 +141,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("grants second valid vote request from new term")
 	{
-		node.request_vote({1, 2, 0, 0});
+		remote_2->request_vote({1, 2, 0, 0});
 
-		auto reply = node.request_vote({2, 3, 0, 0});
+		auto reply = remote_2->request_vote({2, 3, 0, 0});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.current_term() == 2);
@@ -108,9 +152,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("grants second valid vote request from same candidate")
 	{
-		node.request_vote({1, 2, 0, 0});
+		remote_2->request_vote({1, 2, 0, 0});
 
-		auto reply = node.request_vote({1, 2, 0, 0});
+		auto reply = remote_2->request_vote({1, 2, 0, 0});
 		REQUIRE(reply.first == 1);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.current_term() == 1);
@@ -119,9 +163,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("rejects vote request from older term")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		auto reply = node.request_vote({1, 3, 0, 0});
+		auto reply = remote_2->request_vote({1, 3, 0, 0});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == false);
 		REQUIRE(node.current_term() == 2);
@@ -130,11 +174,11 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("rejects vote request due to old log entries")
 	{
-		node.request_vote({2, 2, 0, 0});
-		node.append_entries({2, 2, 0, 0, {{1, 1}}, 1});
+		remote_2->request_vote({2, 2, 0, 0});
+		remote_2->append_entries({2, 2, 0, 0, {{1, 1}}, 1});
 		REQUIRE(node.log().size() == 1);
 
-		auto reply = node.request_vote({3, 3, 0, 0});
+		auto reply = remote_2->request_vote({3, 3, 0, 0});
 		REQUIRE(reply.first == 3);
 		REQUIRE(reply.second == false);
 		REQUIRE(node.current_term() == 3);
@@ -143,9 +187,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("reject append entry request from older term")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		auto reply = node.append_entries({1, 2, 1, 1, {}, 1});
+		auto reply = remote_2->append_entries({1, 2, 1, 1, {}, 1});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == false);
 		REQUIRE(node.commit_index() == 0);
@@ -153,9 +197,9 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("accept append entry request for single element on empty log")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		auto reply = node.append_entries({2, 2, 0, 0, {{1, 1}}, 0});
+		auto reply = remote_2->append_entries({2, 2, 0, 0, {{1, 1}}, 0});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.log().empty() == false);
@@ -167,10 +211,10 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("accept append entry request for single element on non empty log")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		node.append_entries({2, 2, 0, 0, {{2, 1}}, 1});
-		auto reply = node.append_entries({2, 2, 1, 2, {{2, 3}}, 1});
+		remote_2->append_entries({2, 2, 0, 0, {{2, 1}}, 1});
+		auto reply = remote_2->append_entries({2, 2, 1, 2, {{2, 3}}, 1});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.log().empty() == false);
@@ -184,10 +228,10 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("accept append entry request for many elements with merge")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		node.append_entries({2, 2, 0, 0, {{2, 1}}, 1});
-		auto reply = node.append_entries({2, 2, 0, 0, {{2, 1}, {2, 3}}, 2});
+		remote_2->append_entries({2, 2, 0, 0, {{2, 1}}, 1});
+		auto reply = remote_2->append_entries({2, 2, 0, 0, {{2, 1}, {2, 3}}, 2});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.log().empty() == false);
@@ -199,10 +243,10 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("accept append entry request with too big commit index")
 	{
-		node.request_vote({2, 2, 0, 0});
+		remote_2->request_vote({2, 2, 0, 0});
 
-		node.append_entries({2, 2, 0, 0, {{2, 1}}, 1});
-		auto reply = node.append_entries({2, 2, 0, 0, {{2, 1}, {2, 3}}, 7});
+		remote_2->append_entries({2, 2, 0, 0, {{2, 1}}, 1});
+		auto reply = remote_2->append_entries({2, 2, 0, 0, {{2, 1}, {2, 3}}, 7});
 		REQUIRE(reply.first == 2);
 		REQUIRE(reply.second == true);
 		REQUIRE(node.log().empty() == false);
@@ -214,13 +258,13 @@ TEST_CASE("FOLLOWER", "LOCAL")
 
 	SECTION("accept append entry request with conflicting terms")
 	{
-		node.request_vote({1, 2, 0, 0});
+		remote_2->request_vote({1, 2, 0, 0});
 
-		node.append_entries({1, 2, 0, 0, {{1, 1}}, 1});
-		node.append_entries({2, 2, 1, 1, {{2, 1}}, 1});
-		node.append_entries({3, 2, 2, 2, {{3, 1}}, 1});
+		remote_2->append_entries({1, 2, 0, 0, {{1, 1}}, 1});
+		remote_2->append_entries({2, 2, 1, 1, {{2, 1}}, 1});
+		remote_2->append_entries({3, 2, 2, 2, {{3, 1}}, 1});
 
-		auto reply = node.append_entries({4, 2, 1, 1, {{2, 1}, {4, 1}, {4, 2}}, 2});
+		auto reply = remote_2->append_entries({4, 2, 1, 1, {{2, 1}, {4, 1}, {4, 2}}, 2});
 
 		REQUIRE(reply.first == 4);
 		REQUIRE(reply.second == true);
