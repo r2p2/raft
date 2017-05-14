@@ -30,24 +30,9 @@ void StateCandidate::_new_election(LocalNode& node)
 	node._current_term += 1;
 	node._voted_for = node._id;
 
-	for (auto rem_node : node._nodes)
-		rem_node.reset(node);
+	for (auto rem_node : node._remote_nodes)
+		rem_node.start_election_cycle();
 
 	_send_vote_requests(node);
 }
-
-void StateCandidate::_send_vote_requests(LocalNode& node)
-{
-	auto vra = VoteRequestArguments(node.current_term(),
-	                                node.id(),
-	                                node.log().size(),
-	                                0);
-	if (not node.log().empty())
-		vra.candidates_last_log_term = node.log().back().first;
-
-	for (auto rem_node : node._nodes)
-		if (not rem_node.voted_for_me)
-			rem_node.node_ptr->request_vote(vra);
-}
-
 

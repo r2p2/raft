@@ -1,7 +1,7 @@
 #pragma once
 
 #include "timeout.h"
-#include "remote_node.h"
+#include "remote_node_proxy.h"
 
 #include "state_init.h"
 #include "state_follower.h"
@@ -17,8 +17,7 @@
 
 using namespace std::chrono;
 
-class LocalNode : public RemoteNode::RequestHandler,
-                  public Timeout::EventHandler
+class LocalNode : public Timeout::EventHandler
 {
 	friend State;
 	friend StateInit;
@@ -26,32 +25,13 @@ class LocalNode : public RemoteNode::RequestHandler,
 	friend StateCandidate;
 	friend StateLeader;
 
-	struct RemoteNodeData // TODO eliminate stupid data; make intelligent proxy
-	{
-		RemoteNodeData(std::shared_ptr<RemoteNode> node_ptr)
-		: node_ptr(std::move(node_ptr))
-		{
-		}
-
-		void reset(LocalNode& node)
-		{
-			next_index = node.log().size() + 1;
-			match_index = 0;
-			voted_for_me = false;
-		}
-
-		std::shared_ptr<RemoteNode> node_ptr;
-		LogIndex                    next_index   = 0;
-		LogIndex                    match_index  = 0;
-		bool                        voted_for_me = false;
-	};
-
 public:
     LocalNode(NodeId id,
 	          std::shared_ptr<Timeout> timeout,
 	          milliseconds const& el_timeout_min,
 	          milliseconds const& el_timeout_max)
-    : _rd()
+    : Timeout::EventHandler()
+	, _rd()
 	, _mt(_rd())
 	, _timeout(std::move(timeout))
 	, _timeout_span(el_timeout_min.count(), el_timeout_max.count())
@@ -61,7 +41,7 @@ public:
 	, _log()
 	, _commit_index(0)
 	, _last_applied(0)
-	, _nodes()
+	, _remote_nodes()
 	, _state_init()
 	, _state_follower()
 	, _state_candidate()
@@ -73,10 +53,14 @@ public:
 		_change_state(_state_follower);
     }
 
-    void add(std::shared_ptr<RemoteNode> node_ptr)
+    void add(std::shared_ptr<RemoteNode> remote_node,
+	         std::shared_ptr<Timeout> timeout)
     {
-		node_ptr->handler(this);
-        _nodes.emplace_back(std::move(node_ptr));
+        _remote_nodes.emplace_back(
+			*this,
+			std::move(remote_node),
+			std::move(timeout),
+			milliseconds(_timeout_span.min()/2));
     }
 
 	NodeId id() const
@@ -85,6 +69,11 @@ public:
 	}
 
 	Log const& log() const
+	{
+		return _log;
+	}
+
+	Log& log()
 	{
 		return _log;
 	}
@@ -124,28 +113,16 @@ public:
 		return _state == &_state_leader;
 	}
 
-    // RemoteNode::RequestHandler //////////////////////////////////////////////
-
-    std::pair<Term, bool> append_entries(AppendEntryArguments const& args) override
-    {
-		if (_current_term > args.leaders_term)
-			return {_current_term, false};
-
-		if (_current_term < args.leaders_term)
-			_state->new_term_detected(*this, args.leaders_term);
-
-		if (    args.prev_log_index > 0
-		    and _log.size() >= args.prev_log_index
-		    and _log[args.prev_log_index-1].first != args.prev_log_term)
-		{
-			return {_current_term, false};
-		}
-
-		auto loc_log_it = _log.begin() + args.prev_log_index;
-		auto rem_log_it = args.entries.begin();
+	void append_entries(
+			LogIndex prev_log_idx,
+			Log const& entries,
+			LogIndex commit_idx)
+	{
+		auto loc_log_it = _log.begin() + prev_log_idx;
+		auto rem_log_it = entries.begin();
 
 		while (    loc_log_it != _log.end()
-		       and rem_log_it != args.entries.end())
+			   and rem_log_it != entries.end())
 		{
 			if ((*loc_log_it).first != (*rem_log_it).first)
 			{
@@ -158,99 +135,28 @@ public:
 		}
 
 		std::copy(rem_log_it,
-		          args.entries.end(),
-		          std::back_inserter(_log));
+				  entries.end(),
+				  std::back_inserter(_log));
 
-		if (args.leaders_commit_index > _commit_index)
-			_commit_index = std::min(args.leaders_commit_index, _log.size());
+		if (commit_idx > _commit_index)
+			_commit_index = std::min(commit_idx, _log.size());
+	}
 
-		return {_current_term, true};
-    }
+	void request_vote(NodeId id)
+	{
+		_voted_for = id;
+	}
 
-    std::pair<Term, bool> request_vote(VoteRequestArguments const& args) override
-    {
-		if (_current_term > args.candidates_term)
-			return {_current_term, false};
+	void higher_term_detected(Term higher_term)
+	{
+		_state->new_term_detected(*this, higher_term);
+	}
 
-		if (args.candidates_term > _current_term)
-			_state->new_term_detected(*this, args.candidates_term);
-
-		if (has_voted() and voted_for() != args.candidates_id)
-			return {_current_term, false};
-
-		if (args.candidates_last_log_entry < _log.size())
-			return {_current_term, false};
-
-		_voted_for = args.candidates_id;
-
-		return {_current_term, true};
-    }
-
-    void append_entries_reply(RemoteNode& src,
-	                          Term current_term,
-	                          bool success) override
-    {
-		if (_current_term < current_term)
-		{
-			_state->new_term_detected(*this, current_term);
-			return;
-		}
-
-		if (is_leader()) // TODO extract into leader state model
-		{
-			auto rem_node_it = std::find_if(
-				_nodes.begin(),
-				_nodes.end(),
-				[&src](auto const& node_data)
-				{
-					return node_data.node_ptr.get() == &src;
-				});
-
-			auto& rem_node = *rem_node_it;
-
-			if (log().size() < rem_node.next_index)
-				return;
-
-			auto ae = AppendEntryArguments(_current_term,
-										   id(),
-										   rem_node.next_index - 1,
-										   0,
-										   {},
-										   commit_index());
-
-			if ((rem_node.next_index - 1) > 0)
-				ae.prev_log_term = log()[rem_node.next_index - 2].first;
-
-			rem_node.node_ptr->append_entries(ae);
-
-		}
-    }
-
-    void request_vote_reply(RemoteNode& src,
-	                        Term current_term,
-	                        bool granted) override
-    {
-		if (_current_term < current_term)
-		{
-			_state->new_term_detected(*this, current_term);
-			return;
-		}
-
-		if (not granted)
-			return;
-
-		for (auto& rem_node : _nodes)
-		{
-			if (rem_node.node_ptr.get() == &src)
-			{
-				rem_node.voted_for_me = true;
-				break;
-			}
-		}
-
+	void vote_granted()
+	{
 		if (_is_vote_majority_reached())
 			_state->majority_detected(*this);
-    }
+	}
 
     // Timeout::EventHandler ///////////////////////////////////////////////////
 
@@ -277,20 +183,15 @@ private:
 		_timeout->reset(milliseconds(_timeout_span(_mt)));
 	}
 
-	void _restart_heartbeat()
-	{
-		_timeout->reset(milliseconds(_timeout_span.min()/2));
-	}
-
 	bool _is_vote_majority_reached()
 	{
-		auto nr_votes = std::count_if(_nodes.begin(), _nodes.end(),
+		auto nr_votes = std::count_if(
+			_remote_nodes.begin(),
+			_remote_nodes.end(),
 			[](auto const& node)
-			{
-				return node.voted_for_me;
-			});
+			{ return node.is_vote_granted(); });
 
-		return nr_votes > ((_nodes.size() + 1) / 2);
+		return nr_votes > ((_remote_nodes.size() + 1) / 2);
 	}
 
 private:
@@ -308,7 +209,7 @@ private:
     LogIndex                                         _commit_index;
     LogIndex                                         _last_applied;
 
-    std::vector<RemoteNodeData>                      _nodes;
+    std::vector<RemoteNodeProxy>                     _remote_nodes;
 
 	StateInit                                        _state_init;
 	StateFollower                                    _state_follower;

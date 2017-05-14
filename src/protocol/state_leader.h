@@ -9,11 +9,4 @@ public:
 	{
 		return "leader";
 	}
-
-	void enter(LocalNode&) override;
-
-	void timeout(LocalNode&) override;
-
-private:
-	void _send_heartbeats(LocalNode&);
 };

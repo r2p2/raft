@@ -6,7 +6,6 @@
 #include <string>
 
 class LocalNode;
-struct RemoteNodeData;
 
 class State
 {
